@@ -1,7 +1,7 @@
 package main
 
 import (
-	"log"
+	"fmt"
 	"net/http"
 
 	"github.com/gorilla/websocket"
@@ -13,43 +13,43 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-func startServer() error {
+func main() {
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Hello World!")
+	})
+
 	http.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			http.Error(w, "Could not open websocket connection", http.StatusBadRequest)
+			fmt.Println("Upgrade error:", err)
 			return
 		}
 		defer conn.Close()
 
 		for {
-			messageType, p, err := conn.ReadMessage()
+			messageType, message, err := conn.ReadMessage()
 			if err != nil {
-				log.Println("read:", err)
+				fmt.Println("Read error:", err)
 				break
-
 			}
 
-			// Process the audio data in 'p'
-			processedData := processAudioData(p)
+			fmt.Println(string(message), messageType == websocket.BinaryMessage)
 
-			// Forward the processed audio data
-			if err := conn.WriteMessage(messageType, processedData); err != nil {
-				log.Println("write:", err)
-				break
+			for client := range clients {
+				if client != conn {
+					err = client.WriteMessage(messageType, message)
+					if err != nil {
+						fmt.Println("Write error:", err)
+						client.Close()
+						delete(clients, client)
+					}
+				}
 			}
 		}
 	})
 
-	return http.ListenAndServe(":8080", nil)
+	fmt.Println("Listening to port 8080")
+	http.ListenAndServe(":8080", nil)
 }
 
-func main() {
-	startServer()
-}
-
-// processAudioData is a placeholder for actual audio processing logic
-func processAudioData(data []byte) []byte {
-	// Implement your audio processing logic here
-	return data
-}
+var clients = make(map[*websocket.Conn]bool)
