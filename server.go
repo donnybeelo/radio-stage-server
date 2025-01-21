@@ -26,14 +26,18 @@ func main() {
 		}
 		defer conn.Close()
 
+		clients[conn] = true
+		fmt.Println("Device connected:", conn.RemoteAddr())
+
 		for {
 			messageType, message, err := conn.ReadMessage()
 			if err != nil {
 				fmt.Println("Read error:", err)
 				break
 			}
-
-			fmt.Println(string(message), messageType == websocket.BinaryMessage)
+			if messageType == websocket.TextMessage {
+				fmt.Println(conn.RemoteAddr(), "\"", string(message), "\"")
+			}
 
 			for client := range clients {
 				if client != conn {
