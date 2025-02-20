@@ -69,7 +69,7 @@ func enableCORS(handler http.HandlerFunc) http.HandlerFunc {
 
 func main() {
 	http.HandleFunc("/api/", enableCORS(handleEndpoints))
-	http.HandleFunc("/api/ws/", enableCORS(handleDynamicWebSocket))
+	http.HandleFunc("/ws/", enableCORS(handleDynamicWebSocket))
 
 	fmt.Println("Listening to port 8080")
 	http.ListenAndServe(":8080", nil)
