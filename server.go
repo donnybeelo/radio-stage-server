@@ -26,8 +26,13 @@ type APIResponse struct {
 
 type WebSocketEndpoint struct {
 	Path      string       `json:"path"`
+	Name      string       `json:"name"`
 	CreatedAt time.Time    `json:"created_at"`
 	Clients   []ClientInfo `json:"clients"`
+}
+
+type CreateEndpointRequest struct {
+	Name string `json:"name"`
 }
 
 var (
@@ -89,9 +94,29 @@ func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 		})
 
 	case http.MethodPost:
+		var req CreateEndpointRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(APIResponse{
+				Status:  "error",
+				Message: "Invalid request body",
+			})
+			return
+		}
+
+		if req.Name == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(APIResponse{
+				Status:  "error",
+				Message: "Name is required",
+			})
+			return
+		}
+
 		path := generateEndpointPath()
 		endpoint := &WebSocketEndpoint{
 			Path:      path,
+			Name:      req.Name,
 			CreatedAt: time.Now(),
 			Clients:   make([]ClientInfo, 0),
 		}
