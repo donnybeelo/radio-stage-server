@@ -47,9 +47,24 @@ func generateEndpointPath() string {
 	return "/ws/" + hex.EncodeToString(bytes)
 }
 
+func enableCORS(handler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == "OPTIONS" {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		handler(w, r)
+	}
+}
+
 func main() {
-	http.HandleFunc("/api/", handleEndpoints)
-	http.HandleFunc("/api/ws/", handleDynamicWebSocket)
+	http.HandleFunc("/api/", enableCORS(handleEndpoints))
+	http.HandleFunc("/api/ws/", enableCORS(handleDynamicWebSocket))
 
 	fmt.Println("Listening to port 8080")
 	http.ListenAndServe(":8080", nil)
@@ -101,6 +116,10 @@ func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleDynamicWebSocket(w http.ResponseWriter, r *http.Request) {
+	upgrader.CheckOrigin = func(r *http.Request) bool {
+		return true
+	}
+
 	path := r.URL.Path
 
 	clientsMux.RLock()
