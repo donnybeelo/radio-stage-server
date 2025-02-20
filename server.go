@@ -200,13 +200,17 @@ func handleDynamicWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		clientsMux.RLock()
-		for client := range clients {
-			if client != conn {
-				err = client.WriteMessage(messageType, message)
-				if err != nil {
-					fmt.Println("Write error:", err)
-					client.Close()
-					delete(clients, client)
+		// Only broadcast to clients connected to the same endpoint
+		for _, client := range endpoint.Clients {
+			for c := range clients {
+				if c != conn && clients[c].ID == client.ID {
+					err = c.WriteMessage(messageType, message)
+					if err != nil {
+						fmt.Println("Write error:", err)
+						c.Close()
+						delete(clients, c)
+					}
+					break
 				}
 			}
 		}
