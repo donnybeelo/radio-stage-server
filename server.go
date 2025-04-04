@@ -38,9 +38,9 @@ type CreateEndpointRequest struct {
 
 // WebRTC signaling message types
 type SignalingMessage struct {
-	Type string `json:"type"`
-	From string `json:"from"`
-	To   string `json:"to,omitempty"`
+	Type string      `json:"type"`
+	From string      `json:"from"`
+	To   string      `json:"to,omitempty"`
 	Data interface{} `json:"data"`
 }
 
@@ -180,17 +180,17 @@ func createPeerConnection(clientID string, endpointPath string) (*webrtc.PeerCon
 			},
 		},
 	}
-	
+
 	// Create new RTCPeerConnection
 	pc, err := webrtc.NewPeerConnection(config)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Set up event handlers for ICE connection state changes
 	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
 		fmt.Printf("Client %s ICE connection state: %s\n", clientID, state.String())
-		
+
 		if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateClosed || state == webrtc.ICEConnectionStateDisconnected {
 			clientsMux.Lock()
 			clientConn, exists := clients[clientID]
@@ -210,45 +210,45 @@ func createPeerConnection(clientID string, endpointPath string) (*webrtc.PeerCon
 			clientsMux.Unlock()
 		}
 	})
-	
+
 	// Handle ICE candidates
 	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		if candidate == nil {
 			return
 		}
-		
+
 		clientsMux.RLock()
 		clientConn, exists := clients[clientID]
 		clientsMux.RUnlock()
-		
+
 		if !exists {
 			return
 		}
-		
+
 		// Send ICE candidate to client
 		candidateJSON := candidate.ToJSON()
 		message := SignalingMessage{
 			Type: "ice-candidate",
 			From: "server",
-			To: clientID,
+			To:   clientID,
 			Data: ICECandidateData{
-				Candidate: candidateJSON.Candidate,
-				SDPMid: candidateJSON.SDPMid,           // Now compatible with *string
+				Candidate:     candidateJSON.Candidate,
+				SDPMid:        candidateJSON.SDPMid,        // Now compatible with *string
 				SDPMLineIndex: candidateJSON.SDPMLineIndex, // Now compatible with *uint16
 			},
 		}
-		
+
 		msgBytes, err := json.Marshal(message)
 		if err != nil {
 			fmt.Println("Error marshaling ICE candidate:", err)
 			return
 		}
-		
+
 		if err := clientConn.WSConn.WriteMessage(websocket.TextMessage, msgBytes); err != nil {
 			fmt.Println("Error sending ICE candidate:", err)
 		}
 	})
-	
+
 	return pc, nil
 }
 
@@ -274,10 +274,10 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 		fmt.Println("Upgrade error:", err)
 		return
 	}
-	
+
 	// Generate unique client ID
 	clientID := fmt.Sprintf("client-%x", time.Now().UnixNano())
-	
+
 	clientInfo := ClientInfo{
 		ID:          clientID,
 		RemoteAddr:  conn.RemoteAddr().String(),
@@ -317,12 +317,12 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 	// Setup handler for audio tracks
 	peerConnection.OnTrack(func(remoteTrack *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
 		fmt.Printf("New audio track from client %s\n", clientID)
-		
+
 		if remoteTrack.Kind() != webrtc.RTPCodecTypeAudio {
 			fmt.Println("Ignoring non-audio track")
 			return
 		}
-		
+
 		// Read audio packets and broadcast to other clients
 		for {
 			// Read RTP packets
@@ -331,7 +331,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 				fmt.Println("Error reading RTP packet:", err)
 				return
 			}
-			
+
 			// Broadcast to other clients in the same endpoint
 			clientsMux.RLock()
 			for _, otherClientInfo := range endpoint.Clients {
@@ -339,7 +339,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 				if otherClientInfo.ID == clientID {
 					continue
 				}
-				
+
 				otherClient, exists := clients[otherClientInfo.ID]
 				if exists && otherClient.AudioTrack != nil {
 					if err := otherClient.AudioTrack.WriteRTP(rtp); err != nil {
@@ -396,7 +396,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 			audioTrack, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
 				MimeType: webrtc.MimeTypeOpus,
 			}, "audio", "server-audio")
-			
+
 			if err != nil {
 				fmt.Println("Error creating audio track:", err)
 			} else {
@@ -407,7 +407,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 				} else {
 					// Store track for future use
 					clientConn.AudioTrack = audioTrack
-					
+
 					// Read RTCP packets to get client feedback
 					go func() {
 						for {
