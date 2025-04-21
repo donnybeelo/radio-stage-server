@@ -180,7 +180,7 @@ func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func createPeerConnection(clientID string, endpointPath string) (*webrtc.PeerConnection, error) {
+func createPeerConnection(clientID string) (*webrtc.PeerConnection, error) {
 	// WebRTC configuration with public STUN servers
 	config := webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
@@ -295,7 +295,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Create peer connection
-	peerConnection, err := createPeerConnection(clientID, path)
+	peerConnection, err := createPeerConnection(clientID)
 	if err != nil {
 		fmt.Println("Failed to create peer connection:", err)
 		conn.Close()
