@@ -17,6 +17,7 @@ type ClientInfo struct {
 	ID          string    `json:"id"`
 	RemoteAddr  string    `json:"remote_addr"`
 	ConnectedAt time.Time `json:"connected_at"`
+	ProfileType string    `json:"profile_type"` // Added field
 }
 
 type APIResponse struct {
@@ -44,6 +45,13 @@ type SignalingMessage struct {
 	Data interface{} `json:"data"`
 }
 
+// Data structure for offer message, including profile type
+type OfferData struct {
+	SDP         string `json:"sdp"`
+	Type        string `json:"type"`
+	ProfileType string `json:"profileType"` // Added field
+}
+
 // SDP offer/answer data
 type SDPData struct {
 	SDP  string `json:"sdp"`
@@ -64,6 +72,7 @@ type ClientConn struct {
 	PeerConn     *webrtc.PeerConnection
 	AudioTrack   *webrtc.TrackLocalStaticRTP // For sending audio
 	EndpointPath string
+	ProfileType  string // Added field
 }
 
 var (
@@ -282,6 +291,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 		ID:          clientID,
 		RemoteAddr:  conn.RemoteAddr().String(),
 		ConnectedAt: time.Now(),
+		// ProfileType will be set later from the offer message
 	}
 
 	// Create peer connection
@@ -292,7 +302,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Store client connection
+	// Store client connection (ProfileType is initially empty)
 	clientConn := &ClientConn{
 		Info:         clientInfo,
 		WSConn:       conn,
@@ -316,38 +326,134 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 
 	// Setup handler for audio tracks
 	peerConnection.OnTrack(func(remoteTrack *webrtc.TrackRemote, receiver *webrtc.RTPReceiver) {
-		fmt.Printf("New audio track from client %s\n", clientID)
+		// Get the profile type of the sender
+		clientsMux.RLock()
+		senderConn, senderExists := clients[clientID]
+		clientsMux.RUnlock()
+
+		if !senderExists {
+			fmt.Println("Sender connection not found for track")
+			return
+		}
+		// Ensure ProfileType is set before proceeding
+		if senderConn.ProfileType == "" {
+			fmt.Printf("ProfileType not yet set for client %s, ignoring track for now\n", clientID)
+			// Read and discard to prevent blocking? Or just return.
+			go func() {
+				buffer := make([]byte, 1500)
+				for {
+					if _, _, readErr := remoteTrack.Read(buffer); readErr != nil {
+						return
+					}
+				}
+			}()
+			return
+		}
+		senderProfileType := senderConn.ProfileType
+		fmt.Printf("New audio track from client %s (Profile: %s)\n", clientID, senderProfileType)
+
+		// Ignore tracks from audience members entirely
+		if senderProfileType == "audience" {
+			fmt.Printf("Ignoring audio track from audience member %s\n", clientID)
+			// Read and discard packets to prevent buffer buildup or blocking the sender
+			go func() {
+				buffer := make([]byte, 1500)
+				for {
+					if _, _, readErr := remoteTrack.Read(buffer); readErr != nil {
+						// Log read error if needed, then return
+						return
+					}
+				}
+			}()
+			return
+		}
 
 		if remoteTrack.Kind() != webrtc.RTPCodecTypeAudio {
 			fmt.Println("Ignoring non-audio track")
 			return
 		}
 
-		// Read audio packets and broadcast to other clients
+		// Read audio packets and broadcast based on profile rules
 		for {
-			// Read RTP packets
 			rtp, _, err := remoteTrack.ReadRTP()
 			if err != nil {
-				fmt.Println("Error reading RTP packet:", err)
+				if err.Error() == "io: read/write on closed pipe" || err.Error() == "EOF" {
+					fmt.Printf("Track read loop ended for client %s: %v\n", clientID, err)
+				} else {
+					fmt.Println("Error reading RTP packet:", err)
+				}
+				return // Exit loop on error
+			}
+
+			clientsMux.RLock()
+			// Use senderConn.EndpointPath which is known to be correct for this client
+			currentEndpoint, endpointStillExists := endpoints[senderConn.EndpointPath]
+			if !endpointStillExists {
+				clientsMux.RUnlock()
+				fmt.Printf("Endpoint %s no longer exists, stopping broadcast for client %s\n", senderConn.EndpointPath, clientID)
 				return
 			}
 
-			// Broadcast to other clients in the same endpoint
-			clientsMux.RLock()
-			for _, otherClientInfo := range endpoint.Clients {
+			// Create a snapshot of clients to iterate over to avoid holding lock too long
+			clientsInEndpoint := make([]ClientInfo, len(currentEndpoint.Clients))
+			copy(clientsInEndpoint, currentEndpoint.Clients)
+			clientsMux.RUnlock() // Release lock before potentially long-running loop
+
+			for _, otherClientInfo := range clientsInEndpoint {
 				// Don't send to self
 				if otherClientInfo.ID == clientID {
 					continue
 				}
 
+				// Re-acquire lock briefly to get the other client's connection details
+				clientsMux.RLock()
 				otherClient, exists := clients[otherClientInfo.ID]
-				if exists && otherClient.AudioTrack != nil {
-					if err := otherClient.AudioTrack.WriteRTP(rtp); err != nil {
-						fmt.Printf("Error writing RTP to client %s: %v\n", otherClientInfo.ID, err)
+				// Ensure the recipient has an audio track ready to receive data
+				hasAudioTrack := exists && otherClient.AudioTrack != nil
+				recipientProfileType := ""
+				if exists {
+					recipientProfileType = otherClient.ProfileType
+				}
+				clientsMux.RUnlock()
+
+				if !exists || !hasAudioTrack || recipientProfileType == "" {
+					// Skip if recipient doesn't exist, doesn't have an audio track, or profile isn't set yet
+					continue
+				}
+
+				// Determine if sender can be heard by recipient based on rules:
+				canHear := false
+				switch recipientProfileType {
+				case "audience":
+					// Audience hears Actors ONLY
+					if senderProfileType == "actor" {
+						canHear = true
+					}
+				case "actor":
+					// Actors hear Actors and Directors
+					if senderProfileType == "actor" || senderProfileType == "director" {
+						canHear = true
+					}
+				case "director":
+					// Directors hear Actors and Directors
+					if senderProfileType == "actor" || senderProfileType == "director" {
+						canHear = true
 					}
 				}
+
+				if canHear {
+					// Re-acquire lock to write to the track
+					clientsMux.RLock()
+					otherClientToWrite, writeExists := clients[otherClientInfo.ID]
+					if writeExists && otherClientToWrite.AudioTrack != nil {
+						err := otherClientToWrite.AudioTrack.WriteRTP(rtp)
+						if err != nil && err.Error() != "io: read/write on closed pipe" {
+							fmt.Printf("Error writing RTP from %s (%s) to client %s (%s): %v\n", clientID, senderProfileType, otherClientInfo.ID, recipientProfileType, err)
+						}
+					}
+					clientsMux.RUnlock()
+				}
 			}
-			clientsMux.RUnlock()
 		}
 	})
 
@@ -375,43 +481,86 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 		switch signalMsg.Type {
 		case "offer":
 			// Handle SDP offer
-			var sdpData SDPData
+			var offerData OfferData // Use the new struct
 			dataBytes, _ := json.Marshal(signalMsg.Data)
-			if err := json.Unmarshal(dataBytes, &sdpData); err != nil {
-				fmt.Println("Invalid SDP data:", err)
+			if err := json.Unmarshal(dataBytes, &offerData); err != nil {
+				fmt.Println("Invalid offer data:", err)
 				continue
 			}
+
+			// Validate profile type
+			if offerData.ProfileType != "audience" && offerData.ProfileType != "actor" && offerData.ProfileType != "director" {
+				fmt.Printf("Invalid profile type received from %s: %s\n", clientID, offerData.ProfileType)
+				// Optionally send an error message back and close connection
+				conn.WriteJSON(SignalingMessage{Type: "error", Data: "Invalid profile type"})
+				return // Close the connection handler loop
+			}
+
+			// Store profile type in ClientConn and ClientInfo
+			clientsMux.Lock()
+			if cConn, ok := clients[clientID]; ok {
+				cConn.ProfileType = offerData.ProfileType
+				cConn.Info.ProfileType = offerData.ProfileType // Update ClientInfo as well
+
+				// Update the profile type in the endpoint's client list
+				if endpoint, endpointExists := endpoints[cConn.EndpointPath]; endpointExists {
+					for i := range endpoint.Clients {
+						if endpoint.Clients[i].ID == clientID {
+							endpoint.Clients[i].ProfileType = offerData.ProfileType
+							break
+						}
+					}
+				} else {
+					// This case should ideally not happen if endpoint was checked at the start
+					fmt.Printf("Error: Endpoint %s not found while setting profile type for client %s\n", cConn.EndpointPath, clientID)
+				}
+				// Update the clientConn reference directly since it's a pointer
+				clientConn.ProfileType = offerData.ProfileType
+				clientConn.Info.ProfileType = offerData.ProfileType
+
+			} else {
+				// This case should also ideally not happen
+				fmt.Printf("Error: Client %s not found while setting profile type\n", clientID)
+			}
+			clientsMux.Unlock()
+
+			fmt.Printf("Client %s set profile type to: %s\n", clientID, offerData.ProfileType)
 
 			// Set remote description
 			err = peerConnection.SetRemoteDescription(webrtc.SessionDescription{
 				Type: webrtc.SDPTypeOffer,
-				SDP:  sdpData.SDP,
+				SDP:  offerData.SDP, // Use SDP from offerData
 			})
 			if err != nil {
 				fmt.Println("Error setting remote description:", err)
 				continue
 			}
 
-			// Create audio track for sending back to this client
-			audioTrack, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
+			// Always create outgoing audio track; profile filtering is handled in OnTrack.
+			audioTrack, trackErr := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
 				MimeType: webrtc.MimeTypeOpus,
-			}, "audio", "server-audio")
+			}, "audio", "server-audio-"+clientID) // Unique track ID per client
 
-			if err != nil {
-				fmt.Println("Error creating audio track:", err)
+			if trackErr != nil {
+				fmt.Println("Error creating audio track:", trackErr)
 			} else {
-				// Add track to peer connection
-				rtpSender, err := peerConnection.AddTrack(audioTrack)
-				if err != nil {
-					fmt.Println("Error adding audio track to peer connection:", err)
+				rtpSender, addTrackErr := peerConnection.AddTrack(audioTrack)
+				if addTrackErr != nil {
+					fmt.Println("Error adding audio track to peer connection:", addTrackErr)
 				} else {
 					// Store track for future use
-					clientConn.AudioTrack = audioTrack
+					clientsMux.Lock()
+					if cConn, ok := clients[clientID]; ok {
+						cConn.AudioTrack = audioTrack
+					}
+					clientsMux.Unlock()
 
-					// Read RTCP packets to get client feedback
+					// Read RTCP packets to get client feedback (important for NACKs etc.)
 					go func() {
+						rtcpBuf := make([]byte, 1500)
 						for {
-							if _, _, err := rtpSender.ReadRTCP(); err != nil {
+							if _, _, rtcpErr := rtpSender.Read(rtcpBuf); rtcpErr != nil {
+								// RTCP read errors are expected when connection closes
 								return
 							}
 						}
@@ -420,9 +569,9 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// Create answer
-			answer, err := peerConnection.CreateAnswer(nil)
-			if err != nil {
-				fmt.Println("Error creating answer:", err)
+			answer, answerErr := peerConnection.CreateAnswer(nil)
+			if answerErr != nil { // Use the new variable name
+				fmt.Println("Error creating answer:", answerErr)
 				continue
 			}
 
@@ -438,7 +587,7 @@ func handleWebRTCSignaling(w http.ResponseWriter, r *http.Request) {
 				Type: "answer",
 				From: "server",
 				To:   clientID,
-				Data: SDPData{
+				Data: SDPData{ // Use original SDPData struct for answer
 					Type: "answer",
 					SDP:  answer.SDP,
 				},
