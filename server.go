@@ -171,6 +171,27 @@ func handleEndpoints(w http.ResponseWriter, r *http.Request) {
 			Data:    endpoint,
 		})
 
+	case http.MethodDelete:
+		var req struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(APIResponse{Status: "error", Message: "Invalid request body"})
+			return
+		}
+		clientsMux.Lock()
+		if _, ok := endpoints[req.Path]; ok {
+			delete(endpoints, req.Path)
+			clientsMux.Unlock()
+			json.NewEncoder(w).Encode(APIResponse{Status: "success", Message: "Stage deleted"})
+		} else {
+			clientsMux.Unlock()
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(APIResponse{Status: "error", Message: "Stage not found"})
+		}
+		return
+
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		json.NewEncoder(w).Encode(APIResponse{
