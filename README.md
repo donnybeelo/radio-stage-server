@@ -1,6 +1,6 @@
 # RadioStage Server
 
-A server program for use with the RadioStage application. Ensure that port 8080 is allowed through your firewall if this is to be run outside of your LAN.
+The backend for the RadioStage application. Ensure that port 8080 is allowed through your firewall if this is to be run outside of your LAN.
 
 RadioStage is an application for hosting radio plays remotely. This was made for my final year project for my BEng Computer Science degree at the University of York.
 
